@@ -24,35 +24,37 @@ public class WhatsJson {
         boolean inStr = false;
         for (int i = 0, l = json.length(); i < l; ++i) {
             char c = json.charAt(i);
-            switch (c) {
-                case '{':
-                    stack.push(1);
-                    break;
-                case '}':
-                    if (stack.getFirst() == 1) stack.pop();
-                    else throw new IllegalSyntaxException("Curly brackets don't match.");
-                    break;
-                case '[':
-                    stack.push(2);
-                    break;
-                case ']':
-                    if (stack.getFirst() == 2) stack.pop();
-                    else throw new IllegalSyntaxException("Square brackets don't match.");
-                    break;
-                case '"':
-                    inStr = !inStr;
-                    break;
-                case '\\':
-                    if (inStr) ++i;
-                    break;
-                case ',':
-                    if (i - cur + 1 >= sliceSize) {
-                        slices.add(CharBuffer.wrap(json, cur, i + 1));
-                        cur = i + 1;
-                    }
-                    break;
-                default:
-                    break;
+            if (inStr) {
+                switch (c) {
+                    case '"' -> inStr = false;
+                    case '\\' -> ++i;
+                }
+            } else {
+                switch (c) {
+                    case '{':
+                        stack.push(1);
+                        break;
+                    case '}':
+                        if (stack.getFirst() == 1) stack.pop();
+                        else throw new IllegalSyntaxException("Curly brackets don't match.");
+                        break;
+                    case '[':
+                        stack.push(2);
+                        break;
+                    case ']':
+                        if (stack.getFirst() == 2) stack.pop();
+                        else throw new IllegalSyntaxException("Square brackets don't match.");
+                        break;
+                    case '"':
+                        inStr = true;
+                        break;
+                    case ',':
+                        if (i - cur + 1 >= sliceSize) {
+                            slices.add(CharBuffer.wrap(json, cur, i + 1));
+                            cur = i + 1;
+                        }
+                        break;
+                }
             }
         }
         if (inStr) throw new IllegalSyntaxException("Quotes don't match.");
