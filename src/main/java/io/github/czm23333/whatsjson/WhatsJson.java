@@ -394,8 +394,6 @@ public class WhatsJson {
                                         "Unknown value " + new String(buffer, 0, cntCur) + " before a curly bracket.");
                                 return fail;
                             }
-
-                            cntCur = 0;
                         }
                         case '}' -> {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
