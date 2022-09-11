@@ -232,16 +232,48 @@ public class WhatsJson {
             return fail;
         }
 
-        private void tryParseElement(String str) {
-            if (str.isEmpty()) return;
-            JsonElement element;
-            if (str.equals("true")) element = JsonPrimitive.TRUE;
-            else if (str.equals("false")) element = JsonPrimitive.FALSE;
-            else if (str.equals("null")) element = JsonNull.INSTANCE;
+        private void tryParseElement(char[] buffer, int cnt) {
+            if (cnt == 0) return;
+            JsonElement element = null;
+            if (cnt == 4 && buffer[0] == 't' && buffer[1] == 'r' && buffer[2] == 'u' && buffer[3] == 'e')
+                element = JsonPrimitive.TRUE;
+            else if (cnt == 5 && buffer[0] == 'f' && buffer[1] == 'a' && buffer[2] == 'l' && buffer[3] == 's' &&
+                    buffer[4] == 'e') element = JsonPrimitive.FALSE;
+            else if (cnt == 4 && buffer[0] == 'n' && buffer[1] == 'u' && buffer[2] == 'l' && buffer[3] == 'l')
+                element = JsonNull.INSTANCE;
             else {
-                try {
-                    element = new JsonPrimitive(Integer.parseInt(str));
-                } catch (NumberFormatException e1) {
+                if ((buffer[0] == '+' || buffer[0] == '-') && cnt > 1) {
+                    boolean flag = true;
+                    long value = 0;
+                    for (int i = 1; i < cnt; ++i) {
+                        if ('0' <= buffer[i] && buffer[i] <= '9') {
+                            value *= 10;
+                            value += buffer[i] - '0';
+                        } else {
+                            flag = false;
+                            break;
+                        }
+                    }
+                    if (flag) {
+                        if (buffer[0] == '-') value = -value;
+                        element = new JsonPrimitive(value);
+                    }
+                } else if ('0' <= buffer[0] && buffer[0] <= '9') {
+                    boolean flag = true;
+                    long value = 0;
+                    for (int i = 0; i < cnt; ++i) {
+                        if ('0' <= buffer[i] && buffer[i] <= '9') {
+                            value *= 10;
+                            value += buffer[i] - '0';
+                        } else {
+                            flag = false;
+                            break;
+                        }
+                    }
+                    if (flag) element = new JsonPrimitive(value);
+                }
+                if (element == null) {
+                    String str = new String(buffer, 0, cnt);
                     try {
                         element = new JsonPrimitive(Double.parseDouble(str));
                     } catch (NumberFormatException e2) {
@@ -260,14 +292,16 @@ public class WhatsJson {
             boolean inStr = false;
             StringBuilder elementTemp = new StringBuilder();
             CharBuffer sliceCur = slice.slice();
+            char[] buffer = new char[sliceCur.length()];
+            int cntCur = 0;
             while (!sliceCur.isEmpty()) {
                 char c = sliceCur.get();
                 if (inStr) {
                     switch (c) {
                         case '"' -> {
                             inStr = false;
-                            formMemberOrInsert(new JsonElementPart(new JsonPrimitive(elementTemp.toString())));
-                            elementTemp = new StringBuilder();
+                            formMemberOrInsert(new JsonElementPart(new JsonPrimitive(new String(buffer, 0, cntCur))));
+                            cntCur = 0;
                         }
                         case '\\' -> {
                             if (sliceCur.isEmpty()) {
@@ -276,12 +310,12 @@ public class WhatsJson {
                             }
                             char tc = sliceCur.get();
                             switch (tc) {
-                                case 'n' -> elementTemp.append('\n');
-                                case 'b' -> elementTemp.append('\b');
-                                case 'r' -> elementTemp.append('\r');
-                                case 't' -> elementTemp.append('\t');
-                                case 'f' -> elementTemp.append('\f');
-                                case '\'', '"', '\\' -> elementTemp.append(tc);
+                                case 'n' -> buffer[cntCur++] = '\n';
+                                case 'b' -> buffer[cntCur++] = '\b';
+                                case 'r' -> buffer[cntCur++] = '\r';
+                                case 't' -> buffer[cntCur++] = '\t';
+                                case 'f' -> buffer[cntCur++] = '\f';
+                                case '\'', '"', '\\' -> buffer[cntCur++] = tc;
                                 case 'u' -> {
                                     char temp = tc;
                                     while (temp == 'u') {
@@ -315,7 +349,7 @@ public class WhatsJson {
                                         unicodeValue += digit;
                                     }
 
-                                    elementTemp.append((char) unicodeValue);
+                                    buffer[cntCur++] = (char) unicodeValue;
                                 }
                                 case '0', '1', '2', '3', '4', '5', '6', '7' -> {
                                     int octalValue = tc - '0';
@@ -341,7 +375,7 @@ public class WhatsJson {
                                         } else sliceCur.reset();
                                     }
 
-                                    elementTemp.append((char) octalValue);
+                                    buffer[cntCur++] = (char) octalValue;
                                 }
                             }
                         }
@@ -349,23 +383,24 @@ public class WhatsJson {
                             fail = new IllegalSyntaxException("Illegal new line in a string.");
                             return fail;
                         }
-                        default -> elementTemp.append(c);
+                        default -> buffer[cntCur++] = c;
                     }
                 } else {
                     switch (c) {
                         case '{' -> {
-                            String between = elementTemp.toString().strip();
-                            if (between.isEmpty()) parts.add(new ObjectBeginPart());
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            if (cntCur == 0) parts.add(new ObjectBeginPart());
                             else {
                                 fail = new IllegalSyntaxException(
-                                        "Unknown value " + between + " before a curly bracket.");
+                                        "Unknown value " + new String(buffer, 0, cntCur) + " before a curly bracket.");
                                 return fail;
                             }
 
-                            elementTemp = new StringBuilder();
+                            cntCur = 0;
                         }
                         case '}' -> {
-                            tryParseElement(elementTemp.toString().strip());
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            tryParseElement(buffer, cntCur);
 
                             JsonObject obj = new JsonObject();
                             while (true) {
@@ -390,31 +425,29 @@ public class WhatsJson {
                                 }
                             }
 
-                            elementTemp = new StringBuilder();
+                            cntCur = 0;
                         }
                         case '"' -> {
-                            String between = elementTemp.toString().strip();
-                            if (between.isEmpty()) inStr = true;
-                            else {
-                                fail = new IllegalSyntaxException("Unknown value " + between + " before a quote.");
-                                return fail;
-                            }
-
-                            elementTemp = new StringBuilder();
-                        }
-                        case '[' -> {
-                            String between = elementTemp.toString().strip();
-                            if (between.isEmpty()) parts.add(new ArrayBeginPart());
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            if (cntCur == 0) inStr = true;
                             else {
                                 fail = new IllegalSyntaxException(
-                                        "Unknown value " + between + " before a square bracket.");
+                                        "Unknown value " + new String(buffer, 0, cntCur) + " before a quote.");
                                 return fail;
                             }
-
-                            elementTemp = new StringBuilder();
+                        }
+                        case '[' -> {
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            if (cntCur == 0) parts.add(new ArrayBeginPart());
+                            else {
+                                fail = new IllegalSyntaxException(
+                                        "Unknown value " + new String(buffer, 0, cntCur) + " before a square bracket.");
+                                return fail;
+                            }
                         }
                         case ']' -> {
-                            tryParseElement(elementTemp.toString().strip());
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            tryParseElement(buffer, cntCur);
 
                             JsonArray arr = new JsonArray();
                             while (true) {
@@ -440,15 +473,16 @@ public class WhatsJson {
                                 }
                             }
 
-                            elementTemp = new StringBuilder();
+                            cntCur = 0;
                         }
                         case ',' -> {
-                            tryParseElement(elementTemp.toString().strip());
-                            elementTemp = new StringBuilder();
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            tryParseElement(buffer, cntCur);
+                            cntCur = 0;
                         }
                         case ':' -> {
-                            String between = elementTemp.toString().strip();
-                            if (between.isEmpty()) {
+                            while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                            if (cntCur == 0) {
                                 if ((!parts.isEmpty()) &&
                                         parts.get(parts.size() - 1) instanceof JsonElementPart elementPart &&
                                         elementPart.element.isPrimitive() &&
@@ -460,19 +494,23 @@ public class WhatsJson {
                                     return fail;
                                 }
                             } else {
-                                fail = new IllegalSyntaxException("Unknown value " + between + " before a colon.");
+                                fail = new IllegalSyntaxException(
+                                        "Unknown value " + new String(buffer, 0, cntCur) + " before a colon.");
                                 return fail;
                             }
-
-                            elementTemp = new StringBuilder();
                         }
-                        default -> elementTemp.append(c);
+                        default -> {
+                            if (cntCur != 0 || !Character.isWhitespace(c)) buffer[cntCur++] = c;
+                        }
                     }
                 }
             }
 
             if (inStr) fail = new IllegalSyntaxException("Quotes don't match.");
-            else tryParseElement(elementTemp.toString().strip());
+            else {
+                while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
+                tryParseElement(buffer, cntCur);
+            }
 
             return fail;
         }
