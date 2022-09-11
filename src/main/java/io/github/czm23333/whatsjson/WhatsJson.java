@@ -322,6 +322,7 @@ public class WhatsJson {
                                             fail = new IllegalSyntaxException("Illegal unicode escape.");
                                             return fail;
                                         }
+                                        sliceCur.mark();
                                         temp = sliceCur.get();
                                     }
                                     if (temp == '+') {
@@ -329,8 +330,7 @@ public class WhatsJson {
                                             fail = new IllegalSyntaxException("Illegal unicode escape.");
                                             return fail;
                                         }
-                                        temp = sliceCur.get();
-                                    }
+                                    } else sliceCur.reset();
 
                                     if (sliceCur.remaining() < 4) {
                                         fail = new IllegalSyntaxException("Illegal unicode escape.");
