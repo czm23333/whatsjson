@@ -5,7 +5,10 @@ import io.github.czm23333.whatsjson.json.*;
 import org.apache.commons.text.StringEscapeUtils;
 
 import java.nio.CharBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.*;
 
 public class WhatsJson {
@@ -16,14 +19,17 @@ public class WhatsJson {
             new ArrayBlockingQueue<>(threadCnt * 2), new ThreadPoolExecutor.CallerRunsPolicy());
 
     private static ArrayList<CharBuffer> checkAndSpilt(String json) {
-        int sliceSize = Math.max(json.length() / threadCnt, MIN_SLICE_SIZE);
+        char[] jsonChars = json.toCharArray();
+        int nonSpaceCount = 0;
+        for (char c : jsonChars) if (!Character.isWhitespace(c)) ++nonSpaceCount;
+        int sliceSize = Math.max(nonSpaceCount / threadCnt, MIN_SLICE_SIZE);
         ArrayList<CharBuffer> slices = new ArrayList<>();
         int cur = 0;
-
-        ArrayDeque<Integer> stack = new ArrayDeque<>();
         boolean inStr = false;
-        for (int i = 0, l = json.length(); i < l; ++i) {
-            char c = json.charAt(i);
+        nonSpaceCount = 0;
+        for (int i = 0, l = jsonChars.length; i < l; ++i) {
+            char c = jsonChars[i];
+            if (!Character.isWhitespace(c)) ++nonSpaceCount;
             if (inStr) {
                 switch (c) {
                     case '"' -> inStr = false;
@@ -31,41 +37,28 @@ public class WhatsJson {
                 }
             } else {
                 switch (c) {
-                    case '{':
-                        stack.push(1);
-                        break;
-                    case '}':
-                        if (stack.getFirst() == 1) stack.pop();
-                        else throw new IllegalSyntaxException("Curly brackets don't match.");
-                        break;
-                    case '[':
-                        stack.push(2);
-                        break;
-                    case ']':
-                        if (stack.getFirst() == 2) stack.pop();
-                        else throw new IllegalSyntaxException("Square brackets don't match.");
-                        break;
                     case '"':
                         inStr = true;
                         break;
                     case ',':
-                        if (i - cur + 1 >= sliceSize) {
-                            slices.add(CharBuffer.wrap(json, cur, i + 1));
+                        if (nonSpaceCount >= sliceSize) {
+                            slices.add(CharBuffer.wrap(jsonChars, cur, i - cur + 1));
                             cur = i + 1;
+                            nonSpaceCount = 0;
                         }
                         break;
                 }
             }
         }
         if (inStr) throw new IllegalSyntaxException("Quotes don't match.");
-        if (cur < json.length()) slices.add(CharBuffer.wrap(json, cur, json.length()));
+        if (cur < jsonChars.length) slices.add(CharBuffer.wrap(jsonChars, cur, jsonChars.length - cur));
 
         return slices;
     }
 
     public JsonElement fromJson(String json) {
         ArrayList<CharBuffer> slices = checkAndSpilt(json);
-        LinkedList<Parser> parsers = new LinkedList<>();
+        ArrayList<Parser> parsers = new ArrayList<>();
         for (CharBuffer slice : slices) parsers.add(new Parser(slice));
         try {
             threadPool.invokeAll(parsers).forEach(future -> {
@@ -80,28 +73,16 @@ public class WhatsJson {
             throw new RuntimeException(e);
         }
 
-        ArrayList<Future<RuntimeException>> futures = new ArrayList<>();
-        while (parsers.size() > 1) {
-            futures.clear();
-            for (ListIterator<Parser> iterator = parsers.listIterator(); iterator.hasNext(); ) {
-                Parser cur = iterator.next();
-                if (iterator.hasNext()) {
-                    Parser parserToMerge = iterator.next();
-                    futures.add(threadPool.submit(() -> cur.merge(parserToMerge)));
-                    iterator.remove();
-                }
+        Parser finalParser = null;
+        for (Parser parser : parsers) {
+            if (finalParser == null) finalParser = parser;
+            else {
+                RuntimeException temp = finalParser.merge(parser);
+                if (temp != null) throw temp;
             }
-            futures.forEach(future -> {
-                try {
-                    RuntimeException tmp = future.get();
-                    if (tmp != null) throw tmp;
-                } catch (InterruptedException | ExecutionException e) {
-                    throw new RuntimeException(e);
-                }
-            });
         }
 
-        ArrayList<Parser.JsonPart> parts = parsers.getFirst().parts;
+        ArrayList<Parser.JsonPart> parts = Objects.requireNonNull(finalParser).parts;
         if (parts.size() != 1 || !(parts.get(0) instanceof Parser.JsonElementPart elementPart))
             throw new IllegalSyntaxException("Incomplete json.");
 
@@ -388,7 +369,7 @@ public class WhatsJson {
                     switch (c) {
                         case '{' -> {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
-                            if (cntCur == 0) parts.add(new ObjectBeginPart());
+                            if (cntCur == 0) parts.add(ObjectBeginPart.INSTANCE);
                             else {
                                 fail = new IllegalSyntaxException(
                                         "Unknown value " + new String(buffer, 0, cntCur) + " before a curly bracket.");
@@ -435,7 +416,7 @@ public class WhatsJson {
                         }
                         case '[' -> {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
-                            if (cntCur == 0) parts.add(new ArrayBeginPart());
+                            if (cntCur == 0) parts.add(ArrayBeginPart.INSTANCE);
                             else {
                                 fail = new IllegalSyntaxException(
                                         "Unknown value " + new String(buffer, 0, cntCur) + " before a square bracket.");
@@ -545,6 +526,9 @@ public class WhatsJson {
         }
 
         public static class ObjectBeginPart extends JsonPart {
+            public static final ObjectBeginPart INSTANCE = new ObjectBeginPart();
+
+            private ObjectBeginPart() {}
         }
 
         public static class OpenObjectEndPart extends OpenEndPart {
@@ -556,6 +540,9 @@ public class WhatsJson {
         }
 
         public static class ArrayBeginPart extends JsonPart {
+            public static final ArrayBeginPart INSTANCE = new ArrayBeginPart();
+
+            private ArrayBeginPart() {}
         }
 
         public static class OpenArrayEndPart extends OpenEndPart {
