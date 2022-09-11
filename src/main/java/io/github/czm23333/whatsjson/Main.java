@@ -11,7 +11,8 @@ public class Main {
         WhatsJson whatsJson = new WhatsJson();
 
         Scanner scanner = new Scanner(System.in);
-        System.out.println(whatsJson.toJson(whatsJson.fromJson(String.join(System.lineSeparator(), Files.readAllLines(Paths.get(scanner.next()))))));
+        String str = String.join(System.lineSeparator(), Files.readAllLines(Paths.get(scanner.next())));
+        for (int i = 1; i <= 100; ++i) whatsJson.fromJson(str);
 
         whatsJson.shutdown();
     }

@@ -118,8 +118,7 @@ public class WhatsJson {
             else if (primitive.isNumber()) return primitive.asNumber().toString();
             else if (primitive.isBoolean()) return primitive.asBoolean() ? "true" : "false";
             else throw new IllegalArgumentException("Unknown primitive type.");
-        }
-        else throw new IllegalArgumentException("Unknown element type.");
+        } else throw new IllegalArgumentException("Unknown element type.");
     }
 
     public String toJson(JsonArray arr) {
@@ -196,8 +195,7 @@ public class WhatsJson {
                         } else if (part instanceof OpenEndPart) {
                             parts.add(new OpenObjectEndPart(obj));
                             break;
-                        }
-                        else {
+                        } else {
                             fail = new IllegalSyntaxException("Non-member part in JSON object.");
                             return fail;
                         }
@@ -221,8 +219,7 @@ public class WhatsJson {
                         } else if (part instanceof OpenEndPart) {
                             parts.add(new OpenArrayEndPart(arr));
                             break;
-                        }
-                        else {
+                        } else {
                             fail = new IllegalSyntaxException("Non-element part in JSON array.");
                             return fail;
                         }
@@ -269,17 +266,84 @@ public class WhatsJson {
                     switch (c) {
                         case '"' -> {
                             inStr = false;
-                            formMemberOrInsert(new JsonElementPart(
-                                    new JsonPrimitive(StringEscapeUtils.unescapeJson(elementTemp.toString()))));
+                            formMemberOrInsert(new JsonElementPart(new JsonPrimitive(elementTemp.toString())));
                             elementTemp = new StringBuilder();
                         }
                         case '\\' -> {
-                            elementTemp.append(c);
                             if (sliceCur.isEmpty()) {
                                 fail = new IllegalSyntaxException("Missing escape char.");
                                 return fail;
                             }
-                            elementTemp.append(sliceCur.get());
+                            char tc = sliceCur.get();
+                            switch (tc) {
+                                case 'n' -> elementTemp.append('\n');
+                                case 'b' -> elementTemp.append('\b');
+                                case 'r' -> elementTemp.append('\r');
+                                case 't' -> elementTemp.append('\t');
+                                case 'f' -> elementTemp.append('\f');
+                                case '\'', '"', '\\' -> elementTemp.append(tc);
+                                case 'u' -> {
+                                    char temp = tc;
+                                    while (temp == 'u') {
+                                        if (sliceCur.isEmpty()) {
+                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                                            return fail;
+                                        }
+                                        temp = sliceCur.get();
+                                    }
+                                    if (temp == '+') {
+                                        if (sliceCur.isEmpty()) {
+                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                                            return fail;
+                                        }
+                                        temp = sliceCur.get();
+                                    }
+
+                                    if (sliceCur.remaining() < 4) {
+                                        fail = new IllegalSyntaxException("Illegal unicode escape.");
+                                        return fail;
+                                    }
+                                    int unicodeValue = 0;
+                                    for (int i = 1; i <= 4; ++i) {
+                                        temp = sliceCur.get();
+                                        unicodeValue *= 16;
+                                        int digit = Character.digit(temp, 16);
+                                        if (digit == -1) {
+                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                                            return fail;
+                                        }
+                                        unicodeValue += digit;
+                                    }
+
+                                    elementTemp.append((char) unicodeValue);
+                                }
+                                case '0', '1', '2', '3', '4', '5', '6', '7' -> {
+                                    int octalValue = tc - '0';
+                                    boolean flag = true;
+                                    if (!sliceCur.isEmpty()) {
+                                        sliceCur.mark();
+                                        char temp = sliceCur.get();
+                                        if ('0' <= temp && temp <= '7') {
+                                            octalValue *= 8;
+                                            octalValue += temp - '7';
+                                        } else {
+                                            sliceCur.reset();
+                                            flag = false;
+                                        }
+                                    }
+                                    flag &= tc <= '3';
+                                    if (flag && !sliceCur.isEmpty()) {
+                                        sliceCur.mark();
+                                        char temp = sliceCur.get();
+                                        if ('0' <= temp && temp <= '7') {
+                                            octalValue *= 8;
+                                            octalValue += temp - '7';
+                                        } else sliceCur.reset();
+                                    }
+
+                                    elementTemp.append((char) octalValue);
+                                }
+                            }
                         }
                         case '\n' -> {
                             fail = new IllegalSyntaxException("Illegal new line in a string.");
@@ -320,8 +384,7 @@ public class WhatsJson {
                                 } else if (part instanceof OpenEndPart) {
                                     parts.add(new OpenObjectEndPart(obj));
                                     break;
-                                }
-                                else {
+                                } else {
                                     fail = new IllegalSyntaxException("Non-member part in JSON object.");
                                     return fail;
                                 }
@@ -371,8 +434,7 @@ public class WhatsJson {
                                 } else if (part instanceof OpenEndPart) {
                                     parts.add(new OpenArrayEndPart(arr));
                                     break;
-                                }
-                                else {
+                                } else {
                                     fail = new IllegalSyntaxException("Non-element part in JSON array.");
                                     return fail;
                                 }
@@ -387,15 +449,17 @@ public class WhatsJson {
                         case ':' -> {
                             String between = elementTemp.toString().strip();
                             if (between.isEmpty()) {
-                                if ((!parts.isEmpty()) && parts.get(parts.size() - 1) instanceof JsonElementPart elementPart && elementPart.element.isPrimitive() && elementPart.element.asPrimitive().isString()) {
+                                if ((!parts.isEmpty()) &&
+                                        parts.get(parts.size() - 1) instanceof JsonElementPart elementPart &&
+                                        elementPart.element.isPrimitive() &&
+                                        elementPart.element.asPrimitive().isString()) {
                                     parts.remove(parts.size() - 1);
                                     parts.add(new DeclareMemberPart(elementPart.element.asPrimitive().asString()));
                                 } else {
                                     fail = new IllegalSyntaxException("Unexpected colon.");
                                     return fail;
                                 }
-                            }
-                            else {
+                            } else {
                                 fail = new IllegalSyntaxException("Unknown value " + between + " before a colon.");
                                 return fail;
                             }
