@@ -4,7 +4,8 @@ import io.github.czm23333.whatsjson.exception.IllegalSyntaxException;
 import io.github.czm23333.whatsjson.json.*;
 import org.apache.commons.text.StringEscapeUtils;
 
-import java.nio.CharBuffer;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Map;
@@ -18,17 +19,16 @@ public class WhatsJson {
     private final ExecutorService threadPool = new ThreadPoolExecutor(threadCnt, threadCnt, 0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(threadCnt * 2), new ThreadPoolExecutor.CallerRunsPolicy());
 
-    private static ArrayList<CharBuffer> checkAndSpilt(String json) {
-        char[] jsonChars = json.toCharArray();
+    private static ArrayList<ByteBuffer> checkAndSpilt(byte[] json) {
         int nonSpaceCount = 0;
-        for (char c : jsonChars) if (!Character.isWhitespace(c)) ++nonSpaceCount;
+        for (byte c : json) if (!Character.isWhitespace(c)) ++nonSpaceCount;
         int sliceSize = Math.max(nonSpaceCount / threadCnt, MIN_SLICE_SIZE);
-        ArrayList<CharBuffer> slices = new ArrayList<>();
+        ArrayList<ByteBuffer> slices = new ArrayList<>();
         int cur = 0;
         boolean inStr = false;
         nonSpaceCount = 0;
-        for (int i = 0, l = jsonChars.length; i < l; ++i) {
-            char c = jsonChars[i];
+        for (int i = 0, l = json.length; i < l; ++i) {
+            byte c = json[i];
             if (!Character.isWhitespace(c)) ++nonSpaceCount;
             if (inStr) {
                 switch (c) {
@@ -42,7 +42,7 @@ public class WhatsJson {
                         break;
                     case ',':
                         if (nonSpaceCount >= sliceSize) {
-                            slices.add(CharBuffer.wrap(jsonChars, cur, i - cur + 1));
+                            slices.add(ByteBuffer.wrap(json, cur, i - cur + 1));
                             cur = i + 1;
                             nonSpaceCount = 0;
                         }
@@ -51,15 +51,15 @@ public class WhatsJson {
             }
         }
         if (inStr) throw new IllegalSyntaxException("Quotes don't match.");
-        if (cur < jsonChars.length) slices.add(CharBuffer.wrap(jsonChars, cur, jsonChars.length - cur));
+        if (cur < json.length) slices.add(ByteBuffer.wrap(json, cur, json.length - cur));
 
         return slices;
     }
 
-    public JsonElement fromJson(String json) {
-        ArrayList<CharBuffer> slices = checkAndSpilt(json);
+    public JsonElement fromJson(byte[] json) {
+        ArrayList<ByteBuffer> slices = checkAndSpilt(json);
         ArrayList<Parser> parsers = new ArrayList<>();
-        for (CharBuffer slice : slices) parsers.add(new Parser(slice));
+        for (ByteBuffer slice : slices) parsers.add(new Parser(slice));
         try {
             threadPool.invokeAll(parsers).forEach(future -> {
                 try {
@@ -140,10 +140,10 @@ public class WhatsJson {
 
     private static class Parser implements Callable<RuntimeException> {
         public final ArrayList<JsonPart> parts = new ArrayList<>();
-        private final CharBuffer slice;
+        private final ByteBuffer slice;
         public RuntimeException fail = null;
 
-        public Parser(CharBuffer slice) {
+        public Parser(ByteBuffer slice) {
             this.slice = slice;
         }
 
@@ -213,7 +213,7 @@ public class WhatsJson {
             return fail;
         }
 
-        private void tryParseElement(char[] buffer, int cnt) {
+        private void tryParseElement(byte[] buffer, int cnt) {
             if (cnt == 0) return;
             JsonElement element = null;
             if (cnt == 4 && buffer[0] == 't' && buffer[1] == 'r' && buffer[2] == 'u' && buffer[3] == 'e')
@@ -254,7 +254,7 @@ public class WhatsJson {
                     if (flag) element = new JsonPrimitive(value);
                 }
                 if (element == null) {
-                    String str = new String(buffer, 0, cnt);
+                    String str = new String(buffer, 0, cnt, StandardCharsets.UTF_8);
                     try {
                         element = new JsonPrimitive(Double.parseDouble(str));
                     } catch (NumberFormatException e2) {
@@ -271,24 +271,25 @@ public class WhatsJson {
             fail = null;
 
             boolean inStr = false;
-            CharBuffer sliceCur = slice.slice();
-            char[] buffer = new char[sliceCur.length()];
+            ByteBuffer sliceCur = slice.slice();
+            byte[] buffer = new byte[sliceCur.remaining()];
             int cntCur = 0;
-            while (!sliceCur.isEmpty()) {
-                char c = sliceCur.get();
+            while (sliceCur.hasRemaining()) {
+                byte c = sliceCur.get();
                 if (inStr) {
                     switch (c) {
                         case '"' -> {
                             inStr = false;
-                            formMemberOrInsert(new JsonElementPart(new JsonPrimitive(new String(buffer, 0, cntCur))));
+                            formMemberOrInsert(new JsonElementPart(
+                                    new JsonPrimitive(new String(buffer, 0, cntCur, StandardCharsets.UTF_8))));
                             cntCur = 0;
                         }
                         case '\\' -> {
-                            if (sliceCur.isEmpty()) {
+                            if (!sliceCur.hasRemaining()) {
                                 fail = new IllegalSyntaxException("Missing escape char.");
                                 return fail;
                             }
-                            char tc = sliceCur.get();
+                            byte tc = sliceCur.get();
                             switch (tc) {
                                 case 'n' -> buffer[cntCur++] = '\n';
                                 case 'b' -> buffer[cntCur++] = '\b';
@@ -297,9 +298,9 @@ public class WhatsJson {
                                 case 'f' -> buffer[cntCur++] = '\f';
                                 case '\'', '"', '\\' -> buffer[cntCur++] = tc;
                                 case 'u' -> {
-                                    char temp = tc;
+                                    byte temp = tc;
                                     while (temp == 'u') {
-                                        if (sliceCur.isEmpty()) {
+                                        if (!sliceCur.hasRemaining()) {
                                             fail = new IllegalSyntaxException("Illegal unicode escape.");
                                             return fail;
                                         }
@@ -307,7 +308,7 @@ public class WhatsJson {
                                         temp = sliceCur.get();
                                     }
                                     if (temp == '+') {
-                                        if (sliceCur.isEmpty()) {
+                                        if (!sliceCur.hasRemaining()) {
                                             fail = new IllegalSyntaxException("Illegal unicode escape.");
                                             return fail;
                                         }
@@ -329,14 +330,18 @@ public class WhatsJson {
                                         unicodeValue += digit;
                                     }
 
-                                    buffer[cntCur++] = (char) unicodeValue;
+                                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(
+                                            String.valueOf((char) unicodeValue));
+                                    int cntEncoded = encoded.remaining();
+                                    encoded.get(buffer, cntCur, encoded.remaining());
+                                    cntCur += cntEncoded;
                                 }
                                 case '0', '1', '2', '3', '4', '5', '6', '7' -> {
                                     int octalValue = tc - '0';
                                     boolean flag = true;
-                                    if (!sliceCur.isEmpty()) {
+                                    if (sliceCur.hasRemaining()) {
                                         sliceCur.mark();
-                                        char temp = sliceCur.get();
+                                        byte temp = sliceCur.get();
                                         if ('0' <= temp && temp <= '7') {
                                             octalValue *= 8;
                                             octalValue += temp - '7';
@@ -346,16 +351,20 @@ public class WhatsJson {
                                         }
                                     }
                                     flag &= tc <= '3';
-                                    if (flag && !sliceCur.isEmpty()) {
+                                    if (flag && sliceCur.hasRemaining()) {
                                         sliceCur.mark();
-                                        char temp = sliceCur.get();
+                                        byte temp = sliceCur.get();
                                         if ('0' <= temp && temp <= '7') {
                                             octalValue *= 8;
                                             octalValue += temp - '7';
                                         } else sliceCur.reset();
                                     }
 
-                                    buffer[cntCur++] = (char) octalValue;
+                                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(
+                                            String.valueOf((char) octalValue));
+                                    int cntEncoded = encoded.remaining();
+                                    encoded.get(buffer, cntCur, encoded.remaining());
+                                    cntCur += cntEncoded;
                                 }
                             }
                         }
