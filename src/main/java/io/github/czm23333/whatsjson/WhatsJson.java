@@ -290,7 +290,6 @@ public class WhatsJson {
             fail = null;
 
             boolean inStr = false;
-            StringBuilder elementTemp = new StringBuilder();
             CharBuffer sliceCur = slice.slice();
             char[] buffer = new char[sliceCur.length()];
             int cntCur = 0;
