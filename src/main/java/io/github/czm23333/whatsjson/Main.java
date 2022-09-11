@@ -12,7 +12,7 @@ public class Main {
 
         Scanner scanner = new Scanner(System.in);
         byte[] bytes = Files.readAllBytes(Paths.get(scanner.next()));
-        for (int i = 1; i <= 100; ++i) whatsJson.fromJson(bytes);
+        for (int i = 1; i <= 1000; ++i) whatsJson.fromJson(bytes);
 
         whatsJson.shutdown();
     }

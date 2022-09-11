@@ -142,9 +142,13 @@ public class WhatsJson {
         public final ArrayList<JsonPart> parts = new ArrayList<>();
         private final ByteBuffer slice;
         public RuntimeException fail = null;
+        private final byte[] buffer;
+        private boolean inStr = false;
+        private int cntCur = 0;
 
         public Parser(ByteBuffer slice) {
             this.slice = slice;
+            this.buffer = new byte[slice.remaining()];
         }
 
         private void formMemberOrInsert(JsonElementPart part) {
@@ -159,52 +163,9 @@ public class WhatsJson {
 
             for (JsonPart otherPart : other.parts) {
                 if (otherPart instanceof OpenObjectEndPart objectEndPart) {
-                    JsonObject obj = objectEndPart.object;
-                    while (true) {
-                        if (parts.isEmpty()) {
-                            parts.add(new OpenObjectEndPart(obj));
-                            break;
-                        }
-                        JsonPart part = parts.get(parts.size() - 1);
-                        if (part instanceof ObjectBeginPart) {
-                            parts.remove(parts.size() - 1);
-                            formMemberOrInsert(new JsonElementPart(obj));
-                            break;
-                        } else if (part instanceof MemberPart memberPart) {
-                            parts.remove(parts.size() - 1);
-                            obj.put(memberPart.name, memberPart.value);
-                        } else if (part instanceof OpenEndPart) {
-                            parts.add(new OpenObjectEndPart(obj));
-                            break;
-                        } else {
-                            fail = new IllegalSyntaxException("Non-member part in JSON object.");
-                            return fail;
-                        }
-                    }
+                    if (endObject(objectEndPart.object) != null) return fail;
                 } else if (otherPart instanceof OpenArrayEndPart arrayEndPart) {
-                    JsonArray arr = arrayEndPart.array;
-                    while (true) {
-                        if (parts.isEmpty()) {
-                            parts.add(new OpenArrayEndPart(arr));
-                            break;
-                        }
-                        JsonPart part = parts.get(parts.size() - 1);
-                        if (part instanceof ArrayBeginPart) {
-                            parts.remove(parts.size() - 1);
-                            Collections.reverse(arr);
-                            formMemberOrInsert(new JsonElementPart(arr));
-                            break;
-                        } else if (part instanceof JsonElementPart elementPart) {
-                            parts.remove(parts.size() - 1);
-                            arr.add(elementPart.element);
-                        } else if (part instanceof OpenEndPart) {
-                            parts.add(new OpenArrayEndPart(arr));
-                            break;
-                        } else {
-                            fail = new IllegalSyntaxException("Non-element part in JSON array.");
-                            return fail;
-                        }
-                    }
+                    if (endArray(arrayEndPart.array) != null) return fail;
                 } else parts.add(otherPart);
             }
 
@@ -266,16 +227,145 @@ public class WhatsJson {
             formMemberOrInsert(new JsonElementPart(element));
         }
 
+        private RuntimeException parseEscape() {
+            if (!slice.hasRemaining()) {
+                fail = new IllegalSyntaxException("Missing escape char.");
+                return fail;
+            }
+            byte tc = slice.get();
+            switch (tc) {
+                case 'n' -> buffer[cntCur++] = '\n';
+                case 'b' -> buffer[cntCur++] = '\b';
+                case 'r' -> buffer[cntCur++] = '\r';
+                case 't' -> buffer[cntCur++] = '\t';
+                case 'f' -> buffer[cntCur++] = '\f';
+                case '\'', '"', '\\' -> buffer[cntCur++] = tc;
+                case 'u' -> {
+                    byte temp = tc;
+                    while (temp == 'u') {
+                        if (!slice.hasRemaining()) {
+                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                            return fail;
+                        }
+                        slice.mark();
+                        temp = slice.get();
+                    }
+                    if (temp == '+') {
+                        if (!slice.hasRemaining()) {
+                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                            return fail;
+                        }
+                    } else slice.reset();
+
+                    if (slice.remaining() < 4) {
+                        fail = new IllegalSyntaxException("Illegal unicode escape.");
+                        return fail;
+                    }
+                    int unicodeValue = 0;
+                    for (int i = 1; i <= 4; ++i) {
+                        temp = slice.get();
+                        unicodeValue *= 16;
+                        int digit = Character.digit(temp, 16);
+                        if (digit == -1) {
+                            fail = new IllegalSyntaxException("Illegal unicode escape.");
+                            return fail;
+                        }
+                        unicodeValue += digit;
+                    }
+
+                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(String.valueOf((char) unicodeValue));
+                    int cntEncoded = encoded.remaining();
+                    encoded.get(buffer, cntCur, encoded.remaining());
+                    cntCur += cntEncoded;
+                }
+                case '0', '1', '2', '3', '4', '5', '6', '7' -> {
+                    int octalValue = tc - '0';
+                    boolean flag = true;
+                    if (slice.hasRemaining()) {
+                        slice.mark();
+                        byte temp = slice.get();
+                        if ('0' <= temp && temp <= '7') {
+                            octalValue *= 8;
+                            octalValue += temp - '7';
+                        } else {
+                            slice.reset();
+                            flag = false;
+                        }
+                    }
+                    flag &= tc <= '3';
+                    if (flag && slice.hasRemaining()) {
+                        slice.mark();
+                        byte temp = slice.get();
+                        if ('0' <= temp && temp <= '7') {
+                            octalValue *= 8;
+                            octalValue += temp - '7';
+                        } else slice.reset();
+                    }
+
+                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(String.valueOf((char) octalValue));
+                    int cntEncoded = encoded.remaining();
+                    encoded.get(buffer, cntCur, encoded.remaining());
+                    cntCur += cntEncoded;
+                }
+            }
+            return null;
+        }
+
+        private RuntimeException endObject(JsonObject obj) {
+            while (true) {
+                if (parts.isEmpty()) {
+                    parts.add(new OpenObjectEndPart(obj));
+                    break;
+                }
+                JsonPart part = parts.get(parts.size() - 1);
+                if (part instanceof ObjectBeginPart) {
+                    parts.remove(parts.size() - 1);
+                    formMemberOrInsert(new JsonElementPart(obj));
+                    break;
+                } else if (part instanceof MemberPart memberPart) {
+                    parts.remove(parts.size() - 1);
+                    obj.put(memberPart.name, memberPart.value);
+                } else if (part instanceof OpenEndPart) {
+                    parts.add(new OpenObjectEndPart(obj));
+                    break;
+                } else {
+                    fail = new IllegalSyntaxException("Non-member part in JSON object.");
+                    return fail;
+                }
+            }
+            return null;
+        }
+
+        private RuntimeException endArray(JsonArray arr) {
+            while (true) {
+                if (parts.isEmpty()) {
+                    parts.add(new OpenArrayEndPart(arr));
+                    break;
+                }
+                JsonPart part = parts.get(parts.size() - 1);
+                if (part instanceof ArrayBeginPart) {
+                    parts.remove(parts.size() - 1);
+                    Collections.reverse(arr);
+                    formMemberOrInsert(new JsonElementPart(arr));
+                    break;
+                } else if (part instanceof JsonElementPart elementPart) {
+                    parts.remove(parts.size() - 1);
+                    arr.add(elementPart.element);
+                } else if (part instanceof OpenEndPart) {
+                    parts.add(new OpenArrayEndPart(arr));
+                    break;
+                } else {
+                    fail = new IllegalSyntaxException("Non-element part in JSON array.");
+                    return fail;
+                }
+            }
+            return null;
+        }
+
         @Override
         public RuntimeException call() {
-            fail = null;
-
-            boolean inStr = false;
-            ByteBuffer sliceCur = slice.slice();
-            byte[] buffer = new byte[sliceCur.remaining()];
-            int cntCur = 0;
-            while (sliceCur.hasRemaining()) {
-                byte c = sliceCur.get();
+            while (slice.hasRemaining()) {
+                byte c = slice.get();
                 if (inStr) {
                     switch (c) {
                         case '"' -> {
@@ -285,88 +375,7 @@ public class WhatsJson {
                             cntCur = 0;
                         }
                         case '\\' -> {
-                            if (!sliceCur.hasRemaining()) {
-                                fail = new IllegalSyntaxException("Missing escape char.");
-                                return fail;
-                            }
-                            byte tc = sliceCur.get();
-                            switch (tc) {
-                                case 'n' -> buffer[cntCur++] = '\n';
-                                case 'b' -> buffer[cntCur++] = '\b';
-                                case 'r' -> buffer[cntCur++] = '\r';
-                                case 't' -> buffer[cntCur++] = '\t';
-                                case 'f' -> buffer[cntCur++] = '\f';
-                                case '\'', '"', '\\' -> buffer[cntCur++] = tc;
-                                case 'u' -> {
-                                    byte temp = tc;
-                                    while (temp == 'u') {
-                                        if (!sliceCur.hasRemaining()) {
-                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
-                                            return fail;
-                                        }
-                                        sliceCur.mark();
-                                        temp = sliceCur.get();
-                                    }
-                                    if (temp == '+') {
-                                        if (!sliceCur.hasRemaining()) {
-                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
-                                            return fail;
-                                        }
-                                    } else sliceCur.reset();
-
-                                    if (sliceCur.remaining() < 4) {
-                                        fail = new IllegalSyntaxException("Illegal unicode escape.");
-                                        return fail;
-                                    }
-                                    int unicodeValue = 0;
-                                    for (int i = 1; i <= 4; ++i) {
-                                        temp = sliceCur.get();
-                                        unicodeValue *= 16;
-                                        int digit = Character.digit(temp, 16);
-                                        if (digit == -1) {
-                                            fail = new IllegalSyntaxException("Illegal unicode escape.");
-                                            return fail;
-                                        }
-                                        unicodeValue += digit;
-                                    }
-
-                                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(
-                                            String.valueOf((char) unicodeValue));
-                                    int cntEncoded = encoded.remaining();
-                                    encoded.get(buffer, cntCur, encoded.remaining());
-                                    cntCur += cntEncoded;
-                                }
-                                case '0', '1', '2', '3', '4', '5', '6', '7' -> {
-                                    int octalValue = tc - '0';
-                                    boolean flag = true;
-                                    if (sliceCur.hasRemaining()) {
-                                        sliceCur.mark();
-                                        byte temp = sliceCur.get();
-                                        if ('0' <= temp && temp <= '7') {
-                                            octalValue *= 8;
-                                            octalValue += temp - '7';
-                                        } else {
-                                            sliceCur.reset();
-                                            flag = false;
-                                        }
-                                    }
-                                    flag &= tc <= '3';
-                                    if (flag && sliceCur.hasRemaining()) {
-                                        sliceCur.mark();
-                                        byte temp = sliceCur.get();
-                                        if ('0' <= temp && temp <= '7') {
-                                            octalValue *= 8;
-                                            octalValue += temp - '7';
-                                        } else sliceCur.reset();
-                                    }
-
-                                    ByteBuffer encoded = StandardCharsets.UTF_8.encode(
-                                            String.valueOf((char) octalValue));
-                                    int cntEncoded = encoded.remaining();
-                                    encoded.get(buffer, cntCur, encoded.remaining());
-                                    cntCur += cntEncoded;
-                                }
-                            }
+                            if (parseEscape() != null) return fail;
                         }
                         case '\n' -> {
                             fail = new IllegalSyntaxException("Illegal new line in a string.");
@@ -389,30 +398,8 @@ public class WhatsJson {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
                             tryParseElement(buffer, cntCur);
 
-                            JsonObject obj = new JsonObject();
-                            while (true) {
-                                if (parts.isEmpty()) {
-                                    parts.add(new OpenObjectEndPart(obj));
-                                    break;
-                                }
-                                JsonPart part = parts.get(parts.size() - 1);
-                                if (part instanceof ObjectBeginPart) {
-                                    parts.remove(parts.size() - 1);
-                                    formMemberOrInsert(new JsonElementPart(obj));
-                                    break;
-                                } else if (part instanceof MemberPart memberPart) {
-                                    parts.remove(parts.size() - 1);
-                                    obj.put(memberPart.name, memberPart.value);
-                                } else if (part instanceof OpenEndPart) {
-                                    parts.add(new OpenObjectEndPart(obj));
-                                    break;
-                                } else {
-                                    fail = new IllegalSyntaxException("Non-member part in JSON object.");
-                                    return fail;
-                                }
-                            }
-
-                            cntCur = 0;
+                            if (endObject(new JsonObject()) != null) return fail;
+                            else cntCur = 0;
                         }
                         case '"' -> {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
@@ -436,31 +423,8 @@ public class WhatsJson {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
                             tryParseElement(buffer, cntCur);
 
-                            JsonArray arr = new JsonArray();
-                            while (true) {
-                                if (parts.isEmpty()) {
-                                    parts.add(new OpenArrayEndPart(arr));
-                                    break;
-                                }
-                                JsonPart part = parts.get(parts.size() - 1);
-                                if (part instanceof ArrayBeginPart) {
-                                    parts.remove(parts.size() - 1);
-                                    Collections.reverse(arr);
-                                    formMemberOrInsert(new JsonElementPart(arr));
-                                    break;
-                                } else if (part instanceof JsonElementPart elementPart) {
-                                    parts.remove(parts.size() - 1);
-                                    arr.add(elementPart.element);
-                                } else if (part instanceof OpenEndPart) {
-                                    parts.add(new OpenArrayEndPart(arr));
-                                    break;
-                                } else {
-                                    fail = new IllegalSyntaxException("Non-element part in JSON array.");
-                                    return fail;
-                                }
-                            }
-
-                            cntCur = 0;
+                            if (endArray(new JsonArray()) != null) return fail;
+                            else cntCur = 0;
                         }
                         case ',' -> {
                             while (cntCur > 0 && Character.isWhitespace(buffer[cntCur - 1])) --cntCur;
