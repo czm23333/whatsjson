@@ -2,7 +2,7 @@ package io.github.czm23333.whatsjson;
 
 import io.github.czm23333.whatsjson.exception.IllegalSyntaxException;
 import io.github.czm23333.whatsjson.json.*;
-import org.apache.commons.lang3.tuple.Pair;
+import org.apache.commons.lang3.tuple.Triple;
 import org.apache.commons.text.StringEscapeUtils;
 
 import java.nio.ByteBuffer;
@@ -17,14 +17,14 @@ public class WhatsJson {
     private final ExecutorService threadPool = new ThreadPoolExecutor(threadCnt, threadCnt, 0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(threadCnt * 2), new ThreadPoolExecutor.CallerRunsPolicy());
 
-    private static Pair<Boolean, Integer> scan(ByteBuffer bytes, boolean inStr) {
+    private static Triple<Boolean, Integer, Boolean> scan(ByteBuffer bytes, boolean inStr) {
         int lastComma = -1;
         while (bytes.hasRemaining()) {
             byte c = bytes.get();
             if (inStr) switch (c) {
                 case '"' -> inStr = false;
                 case '\\' -> {
-                    if (!bytes.hasRemaining()) return Pair.of(true, -1);
+                    if (!bytes.hasRemaining()) return Triple.of(inStr, lastComma, true);
                     bytes.get();
                 }
             }
@@ -33,7 +33,7 @@ public class WhatsJson {
                 case ',' -> lastComma = bytes.position() - 1;
             }
         }
-        return Pair.of(inStr, lastComma);
+        return Triple.of(inStr, lastComma, false);
     }
 
     private List<ByteBuffer> checkAndSpilt(byte[] json) {
@@ -41,7 +41,7 @@ public class WhatsJson {
         int sliceCnt = json.length / sliceSize + (json.length % sliceSize == 0 ? 0 : 1);
         if (sliceCnt == 1) return Collections.singletonList(ByteBuffer.wrap(json));
 
-        Future<Pair<Boolean, Integer>>[] futures = new Future[1 + (sliceCnt - 2) * 2];
+        Future<Triple<Boolean, Integer, Boolean>>[] futures = new Future[1 + (sliceCnt - 2) * 2];
         {
             ByteBuffer temp = ByteBuffer.wrap(json, 0, sliceSize);
             futures[0] = threadPool.submit(() -> scan(temp, false));
@@ -57,18 +57,19 @@ public class WhatsJson {
         boolean inStr = false;
         int cur = 0;
         try {
-            Pair<Boolean, Integer> temp = futures[0].get();
+            Triple<Boolean, Integer, Boolean> temp = futures[0].get();
             inStr = temp.getLeft();
-            if (temp.getRight() != -1) {
-                slices.add(ByteBuffer.wrap(json, cur, temp.getRight() - cur + 1));
-                cur = temp.getRight() + 1;
+            if (temp.getMiddle() != -1) {
+                slices.add(ByteBuffer.wrap(json, cur, temp.getMiddle() - cur + 1));
+                cur = temp.getMiddle() + 1;
             }
             for (int i = 2; i < sliceCnt; ++i) {
+                if (temp.getRight() && json[sliceSize * (sliceCnt - 1)] == '"') inStr = !inStr;
                 temp = (inStr ? futures[(i - 1) * 2 - 1] : futures[(i - 1) * 2]).get();
                 inStr = temp.getLeft();
-                if (temp.getRight() != -1) {
-                    slices.add(ByteBuffer.wrap(json, cur, temp.getRight() - cur + 1));
-                    cur = temp.getRight() + 1;
+                if (temp.getMiddle() != -1) {
+                    slices.add(ByteBuffer.wrap(json, cur, temp.getMiddle() - cur + 1));
+                    cur = temp.getMiddle() + 1;
                 }
             }
         } catch (InterruptedException | ExecutionException e) {
