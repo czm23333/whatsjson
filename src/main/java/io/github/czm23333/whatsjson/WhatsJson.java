@@ -75,7 +75,6 @@ public class WhatsJson {
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         }
-        if (inStr) throw new IllegalSyntaxException("Quotes don't match.");
 
         if (cur < json.length) slices.add(ByteBuffer.wrap(json, cur, json.length - cur));
 
